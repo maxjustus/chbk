@@ -122,10 +122,10 @@ lets snapshots reuse unchanged objects.
 
 ### Streaming uploads
 
-Each part is hardlinked into a staging tree, written as a stored ZIP, and
-streamed through bounded buffers into an S3 multipart upload. A full part
-archive is never built in memory or on disk. ZIP compression is disabled
-because ClickHouse part files are already compressed.
+Each part is hardlinked into a staging tree. Part files are then streamed as
+an uncompressed ZIP byte stream straight into an S3 multipart upload—no full
+part archive is built in memory or on disk. Compression is skipped because
+ClickHouse part files are already compressed.
 
 ### Consistency and garbage collection
 
