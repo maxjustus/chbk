@@ -340,7 +340,6 @@ impl TuiState {
     fn overall_stats(&self) -> OverallStats {
         let mut stats = OverallStats::default();
         for p in &self.parts {
-            stats.total += 1;
             stats.total_bytes += p.bytes_on_disk;
             if p.is_new {
                 stats.new_parts += 1;
@@ -410,7 +409,6 @@ impl TuiState {
 
 #[derive(Default)]
 struct OverallStats {
-    total: u64,
     new_parts: u64,
     staging: u64,
     staged: u64,
@@ -678,7 +676,7 @@ fn draw_header(
     );
 
     let block = Block::default()
-        .title(format!(" chbak -- {snapshot_name} "))
+        .title(format!(" chbk -- {snapshot_name} "))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
     let paragraph = Paragraph::new(header_text).block(block);

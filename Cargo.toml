@@ -1,14 +1,12 @@
-[workspace]
-
 [package]
 name = "chbk"
 version = "0.1.0"
 edition = "2024"
-default-run = "chbk"
 description = "S3-native ClickHouse MergeTree part backup tool"
 license = "MIT"
 readme = "README.md"
 authors = ["Max Spransy"]
+repository = "https://github.com/maxjustus/chbk"
 include = [
     "/Cargo.lock",
     "/Cargo.toml",
@@ -16,14 +14,12 @@ include = [
     "/Makefile",
     "/README.md",
     "/bench_bw_local_minio.sh",
-    "/disk.xml",
     "/docker-compose.yml",
     "/chbk.example.env",
     "/docs/**",
     "/src/**",
     "/tests/**",
 ]
-
 
 [dependencies]
 bytes = "1"
@@ -32,11 +28,11 @@ clap = { version = "4.0", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
-reqwest = { version = "0.11", default-features = false, features = ["gzip", "json", "rustls-tls"] }
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "fs", "sync", "signal", "time"] }
+reqwest = { version = "0.11", default-features = false, features = ["gzip", "rustls-tls"] }
+tokio = { version = "1.0", features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io-util"] }
 walkdir = "2.5"
-zstd = { version = "0.13", features = ["zstdmt"] }
+zstd = "0.13"
 futures = "0.3"
 aws-sdk-s3 = "1"
 aws-smithy-types = "1"
@@ -49,7 +45,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 gethostname = "0.5"
 rand = "0.8"
-console-subscriber = { git = "https://github.com/tokio-rs/console", branch = "main", optional = true }
+console-subscriber = { version = "0.5", optional = true }
 
 [features]
 default = []
@@ -58,11 +54,7 @@ tokio-console = ["console-subscriber"]
 [dev-dependencies]
 tempfile = "3.8"
 testcontainers = { version = "0.23", features = ["blocking"] }
-testcontainers-modules = { version = "0.11", features = ["minio", "clickhouse", "blocking"] }
-
-[[bin]]
-name = "chbk"
-path = "src/main.rs"
+testcontainers-modules = { version = "0.11", features = ["minio", "blocking"] }
 
 [lints.rust]
 unsafe_code                   = "deny"
@@ -109,5 +101,4 @@ large_futures              = "allow"
 
 [profile.release]
 debug = 1          # keep line/function symbols
-strip = false
-lto = "thin"       # optional
+lto = "thin"

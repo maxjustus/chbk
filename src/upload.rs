@@ -2,11 +2,8 @@ use crate::storage::{Storage, StorageConfig, UploadProgress};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
-pub fn init_storage(
-    cfg: &crate::Config,
-    progress: Option<Arc<UploadProgress>>,
-) -> Result<(Arc<Storage>, Arc<UploadProgress>)> {
-    let progress = progress.unwrap_or_else(|| Arc::new(UploadProgress::new()));
+pub fn init_storage(cfg: &crate::Config) -> Result<(Arc<Storage>, Arc<UploadProgress>)> {
+    let progress = Arc::new(UploadProgress::new());
 
     let bucket = cfg.s3_bucket.clone().context("S3_BUCKET is required")?;
     let region = cfg.s3_region.clone().context("S3_REGION is required")?;

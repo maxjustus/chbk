@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use aws_smithy_types::base64;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -155,10 +155,8 @@ pub async fn read_all_manifests(storage: &Storage, concurrency: usize) -> Result
             .map(|name| async move { read_manifest(storage, &name).await }),
     )
     .buffer_unordered(concurrency.max(1))
-    .collect::<Vec<_>>()
+    .try_collect()
     .await
-    .into_iter()
-    .collect()
 }
 
 /// Set of blob hashes referenced by a manifest's parts.

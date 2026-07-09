@@ -41,7 +41,7 @@ if [ ! -x "./target/release/chbk" ]; then
   cargo build --release
 fi
 
-root="$(mktemp -d -t chbak_bwbench.XXXXXX)"
+root="$(mktemp -d -t chbk_bwbench.XXXXXX)"
 mkdir -p "$root/ch_data" "$root/backups"
 
 cat >"$root/config.xml" <<EOF
@@ -72,7 +72,7 @@ echo "Generating parts (${INSERTS} inserts x ${ROWS_PER_INSERT} rows x ${BYTES_P
 
 "${CLICKHOUSE_LOCAL[@]}" --path "$root/ch_data" --config-file "$root/config.xml" --query "$(tr "\n" " " <"$sql_file")" >/dev/null
 
-name="chbak-bwbench-minio-$RANDOM"
+name="chbk-bwbench-minio-$RANDOM"
 docker run -d --rm --name "$name" -p 127.0.0.1::9000 \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
   minio/minio server /data >/dev/null
@@ -105,7 +105,7 @@ else
   curl -sS -X PUT "${endpoint}/${bucket}" >/dev/null 2>&1 || true
 fi
 
-out="$root/chbak_output.txt"
+out="$root/chbk_output.txt"
 echo "Running create-snapshot (watch Progress lines)..."
 
 BACKUP_DIR="$root/backups" \
@@ -123,51 +123,6 @@ PART_CONCURRENCY="$PART_CONCURRENCY" \
 
 (docker stop "$name" >/dev/null 2>&1 || true) &
 
-python3 - <<PY
-import re
-from statistics import mean
-
-p = "$out"
-units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
-
-zip_rates = []
-up_rates = []
-for line in open(p, "r", errors="ignore"):
-    if "Progress:" not in line:
-        continue
-    rest = line.split("Progress:", 1)[1]
-    for seg in (s.strip() for s in rest.split("|")):
-        if seg.startswith("zip "):
-            m = re.search(r"@ ([0-9.]+) ([A-Z]+)\\/s", seg)
-            if m and m.group(2) in units:
-                zip_rates.append(float(m.group(1)) * units[m.group(2)])
-        if seg.startswith("up "):
-            m = re.search(r"@ ([0-9.]+) ([A-Z]+)\\/s", seg)
-            if m and m.group(2) in units:
-                up_rates.append(float(m.group(1)) * units[m.group(2)])
-
-
-def fmt(bps: float) -> str:
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if bps < 1024 or unit == "TB":
-            if unit == "B":
-                return f"{int(bps)} {unit}/s"
-            return f"{bps:.2f} {unit}/s"
-        bps /= 1024
-    return f"{bps:.2f} TB/s"
-
-
-print("\\nParsed Progress rates (approx):")
-if zip_rates:
-    print(f"  zip: max={fmt(max(zip_rates))}, avg={fmt(mean(zip_rates))}, samples={len(zip_rates)}")
-else:
-    print("  zip: no samples (run was too fast; increase INSERTS/ROWS_PER_INSERT)")
-
-if up_rates:
-    print(f"  up:  max={fmt(max(up_rates))}, avg={fmt(mean(up_rates))}, samples={len(up_rates)}")
-else:
-    print("  up:  no samples (run was too fast; increase INSERTS/ROWS_PER_INSERT)")
-PY
 
 echo "Output log: $out"
 echo "Bench data dir (delete when done): $root"

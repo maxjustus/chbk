@@ -11,7 +11,6 @@ services:
       - "9008:9000"  # Native
     volumes:
       - ./ch_data:/var/lib/clickhouse
-      - ./disk.xml:/etc/clickhouse-server/config.d/disk.xml
     depends_on:
       minio-setup:
         condition: service_completed_successfully

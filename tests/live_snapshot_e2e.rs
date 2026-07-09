@@ -188,7 +188,7 @@ fn generate_ch_config_inner(config_dir: &Path, minio_endpoint: &str, enable_keep
 ///
 /// This test:
 /// 1. Creates test data in ClickHouse
-/// 2. Backs up using chbak (writes a manifest per snapshot)
+/// 2. Backs up using chbk (writes a manifest per snapshot)
 /// 3. Creates a named snapshot
 /// 4. Uses `restore --to` to export to a data directory
 /// 5. Attaches restored parts to ClickHouse
@@ -202,7 +202,7 @@ fn snapshot_restore_and_verify_data() {
     );
 
     // Create a Docker network for container communication
-    let network_name = format!("chbak_test_{}", std::process::id());
+    let network_name = format!("chbk_test_{}", std::process::id());
     let _ = Command::new("docker")
         .args(["network", "create", &network_name])
         .output();
@@ -509,7 +509,7 @@ fn incremental_backup_and_verify_data() {
         "aws CLI is required for tests"
     );
 
-    let network_name = format!("chbak_incr_{}", std::process::id());
+    let network_name = format!("chbk_incr_{}", std::process::id());
     let _ = Command::new("docker")
         .args(["network", "create", &network_name])
         .output();
@@ -765,7 +765,7 @@ fn multiple_parts_backup_and_verify() {
         "aws CLI is required for tests"
     );
 
-    let network_name = format!("chbak_parts_{}", std::process::id());
+    let network_name = format!("chbk_parts_{}", std::process::id());
     let _ = Command::new("docker")
         .args(["network", "create", &network_name])
         .output();
@@ -1009,7 +1009,7 @@ fn replicated_table_ddl_preserved() {
         "aws CLI is required for tests"
     );
 
-    let network_name = format!("chbak_repl_{}", std::process::id());
+    let network_name = format!("chbk_repl_{}", std::process::id());
     let _ = Command::new("docker")
         .args(["network", "create", &network_name])
         .output();

@@ -353,9 +353,9 @@ impl Config {
             s3_access_key_id: args.s3_access_key_id,
             s3_secret_access_key: args.s3_secret_access_key,
             s3_prefix: args.s3_prefix,
-            multipart_part_concurrency: args.multipart_part_concurrency.max(1),
-            part_concurrency: args.part_concurrency.max(1),
-            delete_concurrency: args.delete_concurrency.max(1),
+            multipart_part_concurrency: args.multipart_part_concurrency,
+            part_concurrency: args.part_concurrency,
+            delete_concurrency: args.delete_concurrency,
             upload_target_parts: args.upload_target_parts,
             shard: args.shard,
             replica: args.replica,
@@ -400,8 +400,8 @@ async fn async_main() -> Result<()> {
             return Ok(());
         }
         Some(Commands::CreateSnapshot { name }) => {
-            let (snapshot, _) = snapshots::create_snapshot(&cfg, Some(&name)).await?;
-            println!("Snapshot created: {}", snapshot.snapshot_name);
+            let snapshot_name = snapshots::create_snapshot(&cfg, Some(&name)).await?;
+            println!("Snapshot created: {snapshot_name}");
             return Ok(());
         }
         Some(Commands::Restore {
@@ -443,7 +443,7 @@ async fn async_main() -> Result<()> {
                 None
             };
 
-            let (storage, _) = upload::init_storage(&cfg, None)?;
+            let (storage, _) = upload::init_storage(&cfg)?;
             let filter_ref = table_filter
                 .as_ref()
                 .map(|(db, tbl)| (db.as_str(), tbl.as_str()));
@@ -468,7 +468,7 @@ async fn async_main() -> Result<()> {
             return Ok(());
         }
         Some(Commands::RmSnapshot { name, dry_run }) => {
-            let (storage, _) = upload::init_storage(&cfg, None)?;
+            let (storage, _) = upload::init_storage(&cfg)?;
             gc::gc_snapshot(&cfg, &name, dry_run, storage.as_ref()).await?;
             return Ok(());
         }
@@ -477,7 +477,7 @@ async fn async_main() -> Result<()> {
             shard_concurrency,
             grace_period_hours,
         }) => {
-            let (storage, _) = upload::init_storage(&cfg, None)?;
+            let (storage, _) = upload::init_storage(&cfg)?;
             gc::gc_all_blobs(
                 &cfg,
                 dry_run,
@@ -494,7 +494,7 @@ async fn async_main() -> Result<()> {
             dry_run,
             now,
         }) => {
-            let (storage, _) = upload::init_storage(&cfg, None)?;
+            let (storage, _) = upload::init_storage(&cfg)?;
             let retain_all_minutes = parse_duration_minutes(&retain_all)?;
             let retain_daily_minutes = retain_daily
                 .as_ref()
@@ -517,7 +517,7 @@ async fn async_main() -> Result<()> {
             shard: filter_shard,
             replica: filter_replica,
         }) => {
-            let (storage, _) = upload::init_storage(&cfg, None)?;
+            let (storage, _) = upload::init_storage(&cfg)?;
             let mut manifests = manifest::read_all_manifests(storage.as_ref(), 32).await?;
 
             if let Some(s) = &filter_shard {
@@ -558,16 +558,14 @@ async fn async_main() -> Result<()> {
     }
 
     // Default command: create an auto-named snapshot.
-    let (snapshot, _progress) = snapshots::create_snapshot(&cfg, None).await?;
-    println!("Snapshot created: {}", snapshot.snapshot_name);
+    let snapshot_name = snapshots::create_snapshot(&cfg, None).await?;
+    println!("Snapshot created: {snapshot_name}");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Args, Config, normalize_pattern};
-    use std::fs;
-    use tempfile::TempDir;
 
     #[test]
     fn normalize_pattern_handles_trim_and_none() {
@@ -630,17 +628,6 @@ mod tests {
             ..test_args()
         });
         assert_eq!(cfg.ignore_tables_pattern, None);
-    }
-
-    #[test]
-    fn storage_key_for_path_removes_root() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let nested = root.join("snapshots").join("example").join("file.dat");
-        fs::create_dir_all(nested.parent().unwrap()).unwrap();
-        fs::write(&nested, b"data").unwrap();
-        let key = crate::util::storage_key_for_path(root, &nested);
-        assert_eq!(key, "snapshots/example/file.dat");
     }
 
     // Note: upload tests removed - they required local storage mode.

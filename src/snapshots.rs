@@ -2,7 +2,7 @@
 //!
 //! This implementation treats each ClickHouse part as the unit of storage:
 //! - `system.parts.hash_of_all_files` is used as the CAS key.
-//! - Each part directory is archived to a single stored ZIP (`__part.zip`) and streamed to/from S3.
+//! - Each part is serialized as a stored ZIP stream directly to S3; no local ZIP is created.
 //! - Snapshot metadata lives in per-snapshot JSON.zst manifests on S3.
 
 use crate::Config;
@@ -35,10 +35,6 @@ macro_rules! log_println {
     };
 }
 
-pub struct LiveSnapshotResult {
-    pub snapshot_name: String,
-}
-
 fn rotate_dir_for_cleanup(dir: &Path) -> Result<Option<PathBuf>> {
     if !dir.exists() {
         return Ok(None);
@@ -59,48 +55,21 @@ fn rotate_dir_for_cleanup(dir: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn schedule_delete_dir(dir: PathBuf) {
-    #[cfg(unix)]
-    {
-        match std::process::Command::new("rm")
-            .arg("-rf")
-            .arg(&dir)
-            .spawn()
-        {
-            Ok(mut child) => {
-                // Avoid zombies during long runs.
-                let _ = std::thread::spawn(move || {
-                    if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let _ = child.wait();
-                    })) {
-                        eprintln!("Warning: panic in cleanup thread (child.wait): {e:?}");
-                    }
-                });
-            }
-            Err(e) => {
-                eprintln!(
-                    "Warning: failed to spawn rm -rf {}: {} (falling back to remove_dir_all)",
-                    dir.display(),
-                    e
-                );
-                let _ = std::thread::spawn(move || {
-                    if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let _ = fs::remove_dir_all(&dir);
-                    })) {
-                        eprintln!("Warning: panic in cleanup thread (remove_dir_all): {e:?}");
-                    }
-                });
-            }
+    let _ = std::thread::spawn(move || {
+        if let Err(e) = fs::remove_dir_all(&dir) {
+            eprintln!("Warning: failed to remove {}: {e}", dir.display());
         }
-    }
-    #[cfg(not(unix))]
-    {
-        std::thread::spawn(move || {
-            if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = fs::remove_dir_all(&dir);
-            })) {
-                eprintln!("Warning: panic in cleanup thread (remove_dir_all): {:?}", e);
-            }
-        });
+    });
+}
+
+fn rotate_and_delete(dir: &Path, description: &str) {
+    match rotate_dir_for_cleanup(dir) {
+        Ok(Some(rotated)) => schedule_delete_dir(rotated),
+        Ok(None) => {}
+        Err(error) => eprintln!(
+            "Warning: failed to rotate {description} ({}): {error}",
+            dir.display()
+        ),
     }
 }
 
@@ -124,15 +93,7 @@ impl StagingCleanup {
         }
         self.cleaned = true;
 
-        match rotate_dir_for_cleanup(&self.staging_root) {
-            Ok(Some(rotated)) => schedule_delete_dir(rotated),
-            Ok(None) => {}
-            Err(e) => eprintln!(
-                "Warning: failed to rotate staging dir for cleanup ({}): {}",
-                self.staging_root.display(),
-                e
-            ),
-        }
+        rotate_and_delete(&self.staging_root, "staging directory for cleanup");
     }
 }
 
@@ -516,7 +477,7 @@ async fn upload_part_archives(
 
                 progress.add_upload_total_bytes_est(expected_size);
 
-                // Stream ZIP writer -> multipart reader upload.
+                // Feed the ZIP byte stream into S3 as it is constructed.
                 let (reader, writer) = tokio::io::duplex(1024 * 1024);
                 let writer_task = tokio::task::spawn_blocking({
                     move || -> Result<u64> {
@@ -648,15 +609,28 @@ async fn load_known_from_latest_manifest(
     Ok((hashes, sizes))
 }
 
-pub async fn create_snapshot(
-    cfg: &Config,
-    name: Option<&str>,
-) -> Result<(LiveSnapshotResult, Arc<crate::storage::UploadProgress>)> {
+fn parts_to_upload(
+    parts: &[PartInfo],
+    known_hashes: &HashSet<String>,
+) -> (HashMap<String, PartInfo>, usize) {
+    let mut seen = HashSet::new();
+    let uploads = parts
+        .iter()
+        .filter(|part| {
+            seen.insert(part.hash_of_all_files.clone())
+                && !known_hashes.contains(&part.hash_of_all_files)
+        })
+        .map(|part| (part.hash_of_all_files.clone(), part.clone()))
+        .collect();
+    (uploads, seen.len())
+}
+
+pub async fn create_snapshot(cfg: &Config, name: Option<&str>) -> Result<String> {
     let now = chrono::Utc::now();
     let timestamp_secs = now.timestamp();
 
     println!("Initializing storage...");
-    let (storage, progress) = init_storage(cfg, None)?;
+    let (storage, progress) = init_storage(cfg)?;
     let storage_ref = storage.as_ref();
 
     // Query active parts and compute table map.
@@ -718,15 +692,7 @@ pub async fn create_snapshot(
     // Phase 1: stage ALL needed part directories into a local CAS tree.
     const MAX_STAGING_ITERATIONS: usize = 5;
     let staging_root = cfg.output_dir.join(STAGING_DIR_NAME);
-    match rotate_dir_for_cleanup(&staging_root) {
-        Ok(Some(rotated)) => schedule_delete_dir(rotated),
-        Ok(None) => {}
-        Err(e) => eprintln!(
-            "Warning: failed to rotate old staging dir ({}): {}",
-            staging_root.display(),
-            e
-        ),
-    }
+    rotate_and_delete(&staging_root, "old staging directory");
     fs::create_dir_all(&staging_root)?;
     let mut staging_cleanup = StagingCleanup::new(staging_root.clone());
 
@@ -753,21 +719,7 @@ pub async fn create_snapshot(
     });
 
     for iter in 1..=MAX_STAGING_ITERATIONS {
-        // Determine which part-hashes we need to upload (dedup by hash).
-        let mut need_upload: HashMap<String, PartInfo> = HashMap::new();
-        let mut seen: HashSet<String> = HashSet::new();
-
-        for p in &current_parts {
-            let h = p.hash_of_all_files.clone();
-            if !seen.insert(h.clone()) {
-                continue;
-            }
-            // Trust the latest manifest: if hash is known, blob exists in S3.
-            if !known_hashes.contains(&h) {
-                let _ = need_upload.insert(h, p.clone());
-            }
-        }
-
+        let (need_upload, unique_part_count) = parts_to_upload(&current_parts, &known_hashes);
         let need_upload_count = need_upload.len();
         let need_stage: HashMap<String, PartInfo> = need_upload
             .into_iter()
@@ -777,7 +729,7 @@ pub async fn create_snapshot(
         log_println!(
             is_tui,
             "Part archives: {} total, {} need upload ({} need staging)",
-            seen.len(),
+            unique_part_count,
             need_upload_count,
             need_stage.len()
         );
@@ -863,22 +815,13 @@ pub async fn create_snapshot(
             }
         }
     }
-    let snapshot_files = snapshot_files.expect("loop always breaks or returns");
+    let Some(snapshot_files) = snapshot_files else {
+        bail!("metadata collection did not complete");
+    };
 
     // Phase 2: upload staged directories as streamed ZIPs.
     // Only upload hashes that are still required for this snapshot.
-    let mut need_upload_final: HashMap<String, PartInfo> = HashMap::new();
-    let mut unique_hashes_for_snapshot: HashSet<String> = HashSet::new();
-    for p in &current_parts {
-        let h = p.hash_of_all_files.clone();
-        if !unique_hashes_for_snapshot.insert(h.clone()) {
-            continue;
-        }
-        // Trust the latest manifest: if hash is known, blob exists in S3.
-        if !known_hashes.contains(&h) {
-            let _ = need_upload_final.insert(h, p.clone());
-        }
-    }
+    let (need_upload_final, _) = parts_to_upload(&current_parts, &known_hashes);
 
     let mut upload_dirs: HashMap<String, PathBuf> = HashMap::new();
     for h in need_upload_final.keys() {
@@ -986,7 +929,7 @@ pub async fn create_snapshot(
     drop(event_tx);
     let _ = tui_handle.await;
 
-    Ok((LiveSnapshotResult { snapshot_name }, progress))
+    Ok(snapshot_name)
 }
 
 /// Restore a snapshot from its manifest to a local ClickHouse data directory.

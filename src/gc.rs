@@ -103,7 +103,7 @@ async fn referenced_blob_hashes(storage: &Storage) -> Result<(HashSet<String>, u
     let count = manifests.len();
     let mut referenced = HashSet::new();
     for m in &manifests {
-        referenced.extend(manifest::blob_hash_set(m));
+        referenced.extend(m.parts.iter().map(|part| part.blob_hash.clone()));
     }
     Ok((referenced, count))
 }
@@ -251,9 +251,9 @@ pub async fn prune_old_live_snapshots(
         let mut other_hashes = HashSet::new();
         for m in &all_manifests {
             if prune_set.contains(m.name.as_str()) {
-                target_hashes.extend(manifest::blob_hash_set(m));
+                target_hashes.extend(m.parts.iter().map(|part| part.blob_hash.clone()));
             } else {
-                other_hashes.extend(manifest::blob_hash_set(m));
+                other_hashes.extend(m.parts.iter().map(|part| part.blob_hash.clone()));
             }
         }
 
@@ -354,7 +354,7 @@ async fn union_hashes_for_names(storage: &Storage, names: &[String]) -> Result<H
 
     let mut union = HashSet::new();
     for m in manifests {
-        union.extend(manifest::blob_hash_set(&m?));
+        union.extend(m?.parts.into_iter().map(|part| part.blob_hash));
     }
     Ok(union)
 }

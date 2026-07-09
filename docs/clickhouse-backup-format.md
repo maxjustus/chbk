@@ -12,7 +12,7 @@ base/
   data/
     blobs/
       aa/
-        aa11...ff.zip-like-object
+        aa11...ff
 snapshots/
   live_01_replica-1_y2026m05d15_h13m22s10_ab12cd34.json.zst
   before-upgrade.json.zst

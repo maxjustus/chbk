@@ -37,20 +37,6 @@ const fn hex_digit(c: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
-    fn from_hex_logged(s: &str, context: &str) -> Option<BlobHash> {
-        if let Some(h) = from_hex(s) {
-            Some(h)
-        } else {
-            eprintln!(
-                "Warning: invalid hash '{}' (len={}) in {}",
-                s,
-                s.len(),
-                context
-            );
-            None
-        }
-    }
-
     fn to_hex(h: &BlobHash) -> String {
         const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
         let mut result = String::with_capacity(32);
@@ -89,18 +75,5 @@ mod tests {
         let hash = from_hex(original).unwrap();
         let back = to_hex(&hash);
         assert_eq!(back, original);
-    }
-
-    #[test]
-    fn test_from_hex_logged_valid() {
-        let hash = from_hex_logged("abcdef0123456789abcdef0123456789", "test");
-        assert!(hash.is_some());
-    }
-
-    #[test]
-    fn test_from_hex_logged_invalid() {
-        // This will print a warning but return None
-        let hash = from_hex_logged("invalid", "test context");
-        assert!(hash.is_none());
     }
 }

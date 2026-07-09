@@ -10,14 +10,15 @@ operation that serializes through an S3 lock.
 
 The main goal is a fast, low-memory backup path for large ClickHouse nodes.
 Instead of building full archives on local disk, `chbk` hardlinks each part into
-a local staging tree, writes a stored ZIP for that part, and streams the ZIP
-directly into an S3 multipart upload. The ZIP is stored rather than compressed
-because ClickHouse part files are already column-compressed and because the hot
-path should spend its time reading disk and pushing bytes to S3.
+a local staging tree and constructs a stored ZIP as a byte stream fed directly
+into an S3 multipart upload. No ZIP archive is written locally. The ZIP is
+stored rather than compressed because ClickHouse part files are already
+column-compressed and because the hot path should spend its time reading disk
+and pushing bytes to S3.
 
 In the environment this was built for, using `snmalloc` plus direct ZIP to S3
 streaming was enough to saturate a 50 Gbit/s link without making CPU the
-bottleneck. Treat that as a design data point, not a portable benchmark claim.
+bottleneck.
 
 ## Current Scope
 
@@ -240,9 +241,9 @@ object.
 
 ### Streaming ZIP Uploads
 
-Each part is written as a stored ZIP and streamed through a bounded pipe into a
-multipart S3 upload. The tool does not need a full part archive in memory or on
-disk. Stored ZIPs also keep restore simple: a restored object expands back into
+Each part is serialized as a stored ZIP directly through a bounded pipe into a
+multipart S3 upload. No completed ZIP exists in memory or on local disk. Stored
+ZIPs also keep restore simple: a restored object expands back into
 the original part directory.
 
 The ZIP writer/reader is custom because normal ZIP libraries usually require

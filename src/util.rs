@@ -1,14 +1,3 @@
-#[cfg(test)]
-use std::path::Path;
-
-/// Convert a path under the backup directory into a forward-slash storage key.
-#[cfg(test)]
-pub fn storage_key_for_path(root: &Path, path: &Path) -> String {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    let key = relative.to_string_lossy();
-    key.replace('\\', "/")
-}
-
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if bytes == 0 {

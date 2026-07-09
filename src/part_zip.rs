@@ -375,7 +375,7 @@ pub fn extract_zip<R: Read>(reader: &mut R, dest_dir: &Path) -> Result<()> {
                     // Directory entry (we don't create these, but tolerate them).
                     let rel = PathBuf::from(name.trim_end_matches('/'));
                     validate_rel_path(&rel)?;
-                    let dir = safe_join(dest_dir, &rel)?;
+                    let dir = dest_dir.join(rel);
                     std::fs::create_dir_all(&dir)?;
                     // No file data expected.
                     continue;
@@ -383,7 +383,7 @@ pub fn extract_zip<R: Read>(reader: &mut R, dest_dir: &Path) -> Result<()> {
 
                 let rel = PathBuf::from(&name);
                 validate_rel_path(&rel)?;
-                let out_path = safe_join(dest_dir, &rel)?;
+                let out_path = dest_dir.join(rel);
                 if let Some(parent) = out_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -453,11 +453,6 @@ fn validate_rel_path(path: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn safe_join(base: &Path, rel: &Path) -> Result<PathBuf> {
-    validate_rel_path(rel)?;
-    Ok(base.join(rel))
 }
 
 fn path_to_zip_name(path: &Path) -> Result<String> {

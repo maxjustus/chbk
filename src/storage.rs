@@ -687,80 +687,21 @@ impl Storage {
         base_prefix: &str,
         shard_concurrency: usize,
     ) -> BoxStream<'static, Result<(String, u64, DateTime<Utc>)>> {
-        let shards: Vec<String> = (0..=255u8).map(|i| format!("{i:02x}")).collect();
-        let shard_concurrency = shard_concurrency.max(1);
-        let client = self.client.clone();
-        let bucket = self.bucket.clone();
-        let base_prefix = base_prefix.to_string();
-        let storage_prefix = self.prefix.clone();
-
-        futures::stream::iter(shards)
+        let storage = self.clone();
+        let base_prefix = base_prefix.to_owned();
+        futures::stream::iter(0..=255u8)
             .map(move |shard| {
-                let client = client.clone();
-                let bucket = bucket.clone();
-                let prefix = format!("{base_prefix}{shard}/");
-                let prefixed = match &storage_prefix {
-                    Some(p) => format!("{p}/{prefix}"),
-                    None => prefix,
-                };
-                let storage_prefix = storage_prefix.clone();
-
+                let storage = storage.clone();
+                let prefix = format!("{base_prefix}{shard:02x}/");
                 async move {
-                    let mut items = Vec::new();
-                    let mut continuation: Option<String> = None;
-
-                    loop {
-                        let mut req = client.list_objects_v2().bucket(&bucket).prefix(&prefixed);
-
-                        if let Some(token) = continuation.take() {
-                            req = req.continuation_token(token);
-                        }
-
-                        match req.send().await {
-                            Ok(resp) => {
-                                for obj in resp.contents() {
-                                    if let Some(key) = obj.key() {
-                                        let size = obj.size().unwrap_or(0) as u64;
-                                        let last_modified = obj
-                                            .last_modified()
-                                            .and_then(|dt| {
-                                                DateTime::from_timestamp(
-                                                    dt.secs(),
-                                                    dt.subsec_nanos(),
-                                                )
-                                            })
-                                            .unwrap_or_else(Utc::now);
-                                        let relative_key = match &storage_prefix {
-                                            Some(p) => {
-                                                let prefix_with_slash = format!("{p}/");
-                                                key.strip_prefix(&prefix_with_slash)
-                                                    .unwrap_or(key)
-                                                    .to_string()
-                                            }
-                                            None => key.to_string(),
-                                        };
-                                        items.push(Ok((relative_key, size, last_modified)));
-                                    }
-                                }
-
-                                if let Some(token) = resp.next_continuation_token() {
-                                    continuation = Some(token.to_string());
-                                } else {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                items.push(Err(e.into()));
-                                break;
-                            }
-                        }
+                    match storage.list_objects(&prefix).await {
+                        Ok(items) => items.into_iter().map(Ok).collect(),
+                        Err(error) => vec![Err(error)],
                     }
-
-                    futures::stream::iter(items)
                 }
             })
-            .buffer_unordered(shard_concurrency)
-            .flatten()
+            .buffer_unordered(shard_concurrency.max(1))
+            .flat_map(futures::stream::iter)
             .boxed()
     }
 
