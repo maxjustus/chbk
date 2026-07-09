@@ -1,0 +1,32 @@
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <!-- Local development disk for the MinIO service in docker-compose.yml. -->
+            <s3_backups>
+                <type>s3_plain</type>
+                <metadata_type>plain</metadata_type>
+                <endpoint>http://minio:9000/test-bucket/native-backups/</endpoint>
+                <access_key_id>minioadmin</access_key_id>
+                <secret_access_key>minioadmin</secret_access_key>
+            </s3_backups>
+        </disks>
+
+        <policies>
+            <!-- Policy that includes the backup disk -->
+            <backup_policy>
+                <volumes>
+                    <main>
+                        <disk>default</disk>
+                    </main>
+                    <backup>
+                        <disk>s3_backups</disk>
+                    </backup>
+                </volumes>
+            </backup_policy>
+        </policies>
+    </storage_configuration>
+    
+    <backups>
+        <allowed_disk>s3_backups</allowed_disk>
+    </backups>
+</clickhouse>

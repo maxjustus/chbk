@@ -1,0 +1,43 @@
+version: "3.9"
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      - CLICKHOUSE_DB=db1
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=default
+    ports:
+      - "8128:8123"  # HTTP
+      - "9008:9000"  # Native
+    volumes:
+      - ./ch_data:/var/lib/clickhouse
+      - ./disk.xml:/etc/clickhouse-server/config.d/disk.xml
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb local/test-bucket --ignore-existing;
+      "

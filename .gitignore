@@ -1,0 +1,25 @@
+# Build output
+/target/
+panic.log
+*.rs.bk
+
+# Local runtime data
+/backup/
+/ch_data/
+/tmp/
+
+# Local configuration and credentials
+.env
+.env.*
+.rustic_env
+*.local.xml
+*.pem
+*.key
+
+# Editors and operating systems
+.claude/
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
