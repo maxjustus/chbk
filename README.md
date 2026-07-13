@@ -125,7 +125,8 @@ lets snapshots reuse unchanged objects.
 Each part is hardlinked into a staging tree. Part files are then streamed as
 an uncompressed ZIP byte stream straight into an S3 multipart upload—no full
 part archive is built in memory or on disk. Compression is skipped because
-ClickHouse part files are already compressed.
+ClickHouse part files are already compressed. Each staged part is removed after
+its upload completes and its ZIP size is verified.
 
 ### Consistency and garbage collection
 

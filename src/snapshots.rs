@@ -35,42 +35,63 @@ macro_rules! log_println {
     };
 }
 
-fn rotate_dir_for_cleanup(dir: &Path) -> Result<Option<PathBuf>> {
-    if !dir.exists() {
-        return Ok(None);
+fn remove_dir_all_if_exists(dir: &Path) -> Result<()> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("Failed to remove {}", dir.display())),
     }
-    let Some(parent) = dir.parent() else {
-        bail!("No parent dir for {}", dir.display());
-    };
-    let name = dir.file_name().unwrap_or_default().to_string_lossy();
-    let rotated = parent.join(format!("{name}-old-{}", Uuid::new_v4()));
-    fs::rename(dir, &rotated).with_context(|| {
-        format!(
-            "Failed to rename {} to {}",
-            dir.display(),
-            rotated.display()
-        )
-    })?;
-    Ok(Some(rotated))
 }
 
-fn schedule_delete_dir(dir: PathBuf) {
-    let _ = std::thread::spawn(move || {
-        if let Err(e) = fs::remove_dir_all(&dir) {
-            eprintln!("Warning: failed to remove {}: {e}", dir.display());
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("Failed to remove {}", path.display())),
+    }
+}
+
+fn cleanup_staged_part_sync(dir: &Path) -> Result<()> {
+    remove_dir_all_if_exists(dir)?;
+    remove_file_if_exists(&dir.with_extension("staged"))
+}
+
+fn cleanup_staging_dirs_sync(output_dir: &Path) -> Result<()> {
+    let entries = match fs::read_dir(output_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to read {}", output_dir.display()));
         }
-    });
+    };
+    let legacy_prefix = format!("{STAGING_DIR_NAME}-old-");
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name == STAGING_DIR_NAME || name.starts_with(&legacy_prefix) {
+            remove_dir_all_if_exists(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
-fn rotate_and_delete(dir: &Path, description: &str) {
-    match rotate_dir_for_cleanup(dir) {
-        Ok(Some(rotated)) => schedule_delete_dir(rotated),
-        Ok(None) => {}
-        Err(error) => eprintln!(
-            "Warning: failed to rotate {description} ({}): {error}",
-            dir.display()
-        ),
-    }
+async fn cleanup_staged_part(dir: PathBuf) -> Result<()> {
+    tokio::task::spawn_blocking(move || cleanup_staged_part_sync(&dir))
+        .await
+        .context("staged part cleanup task panicked")?
+}
+
+async fn cleanup_staged_parts(dirs: Vec<PathBuf>) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
+        dirs.par_iter()
+            .try_for_each(|dir| cleanup_staged_part_sync(dir))
+    })
+    .await
+    .context("staged parts cleanup task panicked")?
 }
 
 #[derive(Debug)]
@@ -87,19 +108,25 @@ impl StagingCleanup {
         }
     }
 
-    fn cleanup_now(&mut self) {
+    fn cleanup_now(&mut self) -> Result<()> {
         if self.cleaned {
-            return;
+            return Ok(());
         }
-        self.cleaned = true;
 
-        rotate_and_delete(&self.staging_root, "staging directory for cleanup");
+        remove_dir_all_if_exists(&self.staging_root)?;
+        self.cleaned = true;
+        Ok(())
     }
 }
 
 impl Drop for StagingCleanup {
     fn drop(&mut self) {
-        self.cleanup_now();
+        if let Err(error) = self.cleanup_now() {
+            eprintln!(
+                "Warning: failed to remove staging directory {}: {error:#}",
+                self.staging_root.display()
+            );
+        }
     }
 }
 
@@ -504,7 +531,7 @@ async fn upload_part_archives(
                         });
                     });
 
-                let uploaded = storage
+                let upload_result = storage
                     .put_object_multipart_reader(
                         &remote_key,
                         reader,
@@ -512,16 +539,28 @@ async fn upload_part_archives(
                         Some(on_progress),
                     )
                     .await
-                    .with_context(|| format!("Failed to upload {remote_key}"))?;
+                    .with_context(|| format!("Failed to upload {remote_key}"));
+                let writer_result = writer_task
+                    .await
+                    .context("ZIP writer task panicked")
+                    .and_then(|result| result);
+                let uploaded = match (upload_result, writer_result) {
+                    (Err(upload_error), _) => return Err(upload_error),
+                    (Ok(_), Err(writer_error)) => return Err(writer_error),
+                    (Ok(uploaded), Ok(written)) => {
+                        if uploaded != written {
+                            bail!(
+                                "ZIP upload size mismatch for {hash}: uploaded {uploaded} vs written {written}"
+                            );
+                        }
+                        uploaded
+                    }
+                };
+
                 progress.record_upload_done();
-
-                let written = writer_task.await.context("ZIP writer task panicked")??;
-
-                if uploaded != written {
-                    bail!(
-                        "ZIP upload size mismatch for {hash}: uploaded {uploaded} vs written {written}"
-                    );
-                }
+                cleanup_staged_part(dir)
+                    .await
+                    .with_context(|| format!("Failed to clean up staged part {hash}"))?;
 
                 let _ = etx.send(crate::tui::BackupEvent::PartDone {
                     hash: hash.clone(),
@@ -692,7 +731,7 @@ pub async fn create_snapshot(cfg: &Config, name: Option<&str>) -> Result<String>
     // Phase 1: stage ALL needed part directories into a local CAS tree.
     const MAX_STAGING_ITERATIONS: usize = 5;
     let staging_root = cfg.output_dir.join(STAGING_DIR_NAME);
-    rotate_and_delete(&staging_root, "old staging directory");
+    cleanup_staging_dirs_sync(&cfg.output_dir)?;
     fs::create_dir_all(&staging_root)?;
     let mut staging_cleanup = StagingCleanup::new(staging_root.clone());
 
@@ -823,17 +862,21 @@ pub async fn create_snapshot(cfg: &Config, name: Option<&str>) -> Result<String>
     // Only upload hashes that are still required for this snapshot.
     let (need_upload_final, _) = parts_to_upload(&current_parts, &known_hashes);
 
-    let mut upload_dirs: HashMap<String, PathBuf> = HashMap::new();
-    for h in need_upload_final.keys() {
-        if head_skipped.contains_key(h) {
-            continue;
+    let mut upload_dirs = HashMap::new();
+    let mut unused_dirs = Vec::new();
+    for (hash, dir) in staged_dirs {
+        if need_upload_final.contains_key(&hash) && !head_skipped.contains_key(&hash) {
+            let _ = upload_dirs.insert(hash, dir);
+        } else {
+            unused_dirs.push(dir);
         }
-        let dir = staged_dirs
-            .get(h)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Need upload for {h} but not staged"))?;
-        let _ = upload_dirs.insert(h.clone(), dir);
     }
+    for hash in need_upload_final.keys() {
+        if !head_skipped.contains_key(hash) && !upload_dirs.contains_key(hash) {
+            bail!("Need upload for {hash} but not staged");
+        }
+    }
+    cleanup_staged_parts(unused_dirs).await?;
 
     if !head_skipped.is_empty() {
         log_println!(
@@ -857,9 +900,7 @@ pub async fn create_snapshot(cfg: &Config, name: Option<&str>) -> Result<String>
     )
     .await?;
 
-    // Start cleaning up the staged hardlinks as soon as we're done uploading parts.
-    // This avoids a large `remove_dir_all` in the hot path and releases disk space sooner.
-    staging_cleanup.cleanup_now();
+    staging_cleanup.cleanup_now()?;
 
     // Track newly uploaded sizes + head-skipped sizes.
     for (hash, size) in new_uploads {
@@ -1171,4 +1212,55 @@ fn filter_restore_items(
         files,
         skipped,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn cleanup_staged_part_removes_links_and_marker() {
+        let tmp = TempDir::new().expect("tempdir");
+        let source = tmp.path().join("source.bin");
+        fs::write(&source, b"part data").expect("write source");
+
+        let staged = tmp.path().join("staging_parts/ab/abcdef");
+        fs::create_dir_all(&staged).expect("create staged dir");
+        fs::hard_link(&source, staged.join("data.bin")).expect("hardlink staged file");
+        let marker = staged.with_extension("staged");
+        fs::write(&marker, b"ok").expect("write marker");
+
+        cleanup_staged_part_sync(&staged).expect("cleanup staged part");
+
+        assert!(!staged.exists());
+        assert!(!marker.exists());
+        assert_eq!(fs::read(source).expect("read source"), b"part data");
+    }
+
+    #[test]
+    fn cleanup_staged_part_is_idempotent() {
+        let tmp = TempDir::new().expect("tempdir");
+        let staged = tmp.path().join("staging_parts/ab/abcdef");
+
+        cleanup_staged_part_sync(&staged).expect("cleanup absent staged part");
+        cleanup_staged_part_sync(&staged).expect("cleanup absent staged part again");
+    }
+
+    #[test]
+    fn cleanup_staging_dirs_removes_only_chbk_staging_dirs() {
+        let tmp = TempDir::new().expect("tempdir");
+        let current = tmp.path().join(STAGING_DIR_NAME);
+        let legacy = tmp.path().join("staging_parts-old-1234");
+        let unrelated = tmp.path().join("staging_parts_archive");
+        fs::create_dir_all(&current).expect("create current staging dir");
+        fs::create_dir_all(&legacy).expect("create legacy staging dir");
+        fs::create_dir_all(&unrelated).expect("create unrelated dir");
+
+        cleanup_staging_dirs_sync(tmp.path()).expect("cleanup staging dirs");
+
+        assert!(!current.exists());
+        assert!(!legacy.exists());
+        assert!(unrelated.exists());
+    }
 }
