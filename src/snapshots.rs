@@ -57,13 +57,8 @@ fn cleanup_staged_part_sync(dir: &Path) -> Result<()> {
 }
 
 fn cleanup_staging_dirs_sync(output_dir: &Path) -> Result<()> {
-    let entries = match fs::read_dir(output_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("Failed to read {}", output_dir.display()));
-        }
-    };
+    let entries = fs::read_dir(output_dir)
+        .with_context(|| format!("Failed to read {}", output_dir.display()))?;
     let legacy_prefix = format!("{STAGING_DIR_NAME}-old-");
     for entry in entries {
         let entry = entry?;
@@ -97,25 +92,15 @@ async fn cleanup_staged_parts(dirs: Vec<PathBuf>) -> Result<()> {
 #[derive(Debug)]
 struct StagingCleanup {
     staging_root: PathBuf,
-    cleaned: bool,
 }
 
 impl StagingCleanup {
     const fn new(staging_root: PathBuf) -> Self {
-        Self {
-            staging_root,
-            cleaned: false,
-        }
+        Self { staging_root }
     }
 
-    fn cleanup_now(&mut self) -> Result<()> {
-        if self.cleaned {
-            return Ok(());
-        }
-
-        remove_dir_all_if_exists(&self.staging_root)?;
-        self.cleaned = true;
-        Ok(())
+    fn cleanup_now(&self) -> Result<()> {
+        remove_dir_all_if_exists(&self.staging_root)
     }
 }
 
@@ -544,18 +529,13 @@ async fn upload_part_archives(
                     .await
                     .context("ZIP writer task panicked")
                     .and_then(|result| result);
-                let uploaded = match (upload_result, writer_result) {
-                    (Err(upload_error), _) => return Err(upload_error),
-                    (Ok(_), Err(writer_error)) => return Err(writer_error),
-                    (Ok(uploaded), Ok(written)) => {
-                        if uploaded != written {
-                            bail!(
-                                "ZIP upload size mismatch for {hash}: uploaded {uploaded} vs written {written}"
-                            );
-                        }
-                        uploaded
-                    }
-                };
+                let uploaded = upload_result?;
+                let written = writer_result?;
+                if uploaded != written {
+                    bail!(
+                        "ZIP upload size mismatch for {hash}: uploaded {uploaded} vs written {written}"
+                    );
+                }
 
                 progress.record_upload_done();
                 cleanup_staged_part(dir)
@@ -731,9 +711,10 @@ pub async fn create_snapshot(cfg: &Config, name: Option<&str>) -> Result<String>
     // Phase 1: stage ALL needed part directories into a local CAS tree.
     const MAX_STAGING_ITERATIONS: usize = 5;
     let staging_root = cfg.output_dir.join(STAGING_DIR_NAME);
+    fs::create_dir_all(&cfg.output_dir)?;
     cleanup_staging_dirs_sync(&cfg.output_dir)?;
     fs::create_dir_all(&staging_root)?;
-    let mut staging_cleanup = StagingCleanup::new(staging_root.clone());
+    let staging_cleanup = StagingCleanup::new(staging_root.clone());
 
     let mut staged_dirs: HashMap<String, PathBuf> = HashMap::new();
     let mut current_parts = parts;

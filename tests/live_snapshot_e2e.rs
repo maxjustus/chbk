@@ -89,20 +89,6 @@ fn build_binary() -> std::path::PathBuf {
     bin
 }
 
-fn assert_staging_clean(backup_dir: &Path) {
-    let leftovers: Vec<_> = fs::read_dir(backup_dir)
-        .expect("read backup dir")
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .filter(|name| {
-            name.to_str().is_some_and(|name| {
-                name == "staging_parts" || name.starts_with("staging_parts-old-")
-            })
-        })
-        .collect();
-    assert!(leftovers.is_empty(), "staging leftovers: {leftovers:?}");
-}
-
 fn wait_for_clickhouse(url: &str, timeout_secs: u64) -> bool {
     let start = std::time::Instant::now();
     let url_with_auth = format!("{url}/?user={CH_USER}&password={CH_PASSWORD}");
@@ -350,7 +336,12 @@ fn snapshot_restore_and_verify_data() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_staging_clean(backup_tmp.path());
+    assert_eq!(
+        fs::read_dir(backup_tmp.path())
+            .expect("read backup dir")
+            .count(),
+        0
+    );
     println!("  Backup completed");
 
     println!("Step 5: Restoring snapshot to mounted directory...");
